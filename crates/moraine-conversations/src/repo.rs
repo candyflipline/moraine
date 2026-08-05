@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 
 use crate::domain::{
-    AnalyticsRange, AnalyticsSnapshot, IngestHeartbeatRead, IngestStatusRead, SessionAnalytics,
-    SessionAnalyticsQuery, StoreDiagnostics, StoreHealth, TablePreview, TablePreviewQuery,
-    TableSummaries, WebSearchEvent,
+    AnalyticsRange, AnalyticsSnapshot, AuthorUsageSnapshot, IngestHeartbeatRead, IngestStatusRead,
+    SessionAnalytics, SessionAnalyticsQuery, StoreDiagnostics, StoreHealth, TablePreview,
+    TablePreviewQuery, TableSummaries, WebSearchEvent,
 };
 use crate::domain::{
     Conversation, ConversationDetailOptions, ConversationListFilter, ConversationSearchQuery,
@@ -27,6 +27,8 @@ pub trait ConversationRepository: Send + Sync {
     ) -> RepoResult<Vec<SessionAnalytics>>;
 
     async fn analytics_series(&self, range: AnalyticsRange) -> RepoResult<AnalyticsSnapshot>;
+
+    async fn author_usage(&self, range: AnalyticsRange) -> RepoResult<AuthorUsageSnapshot>;
 
     async fn list_web_searches(&self, limit: u16) -> RepoResult<Vec<WebSearchEvent>>;
 

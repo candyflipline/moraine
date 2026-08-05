@@ -38,10 +38,31 @@ describe('versioned monitor requests', () => {
       headers: { Accept: 'application/json' },
     });
   });
+
+  it('requests author usage through the trusted project-routing header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchAnalytics('30d', {
+      projectDir: '/Users/alice/src/team-project',
+      authorBreakdown: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/analytics?range=30d&breakdown=author', {
+      headers: {
+        Accept: 'application/json',
+        'X-Moraine-Project-Dir': '/Users/alice/src/team-project',
+      },
+    });
+  });
 });
 
 describe('request errors', () => {
-
   it('uses API error text from json error payloads', async () => {
     vi.stubGlobal(
       'fetch',

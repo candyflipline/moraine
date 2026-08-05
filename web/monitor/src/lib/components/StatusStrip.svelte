@@ -5,6 +5,7 @@
   export let healthError: string | null = null;
   export let status: StatusResponse | null = null;
   export let statusError: string | null = null;
+  export let showIngestor = true;
 
   interface Chip {
     key: string;
@@ -210,17 +211,19 @@
       {/each}
     </div>
   </div>
-  <div class="ss-divider" aria-hidden="true"></div>
-  <div class="ss-group" id="ingestorGroup">
-    <div class="ss-group-label">Ingestor</div>
-    <div class="ss-chips">
-      {#each ingestorChips as chip (chip.key)}
-        <span class="ss-chip" class:ss-ok={chip.ok} class:ss-warn={chip.tone === 'warn'} class:ss-bad={chip.tone === 'bad'}>
-          {#if chip.ok}<span class="ss-dot"></span>{/if}
-          <span class="ss-k">{chip.key}</span>
-          <span class="ss-v mono">{chip.value}</span>
-        </span>
-      {/each}
+  {#if showIngestor}
+    <div class="ss-divider" aria-hidden="true"></div>
+    <div class="ss-group" id="ingestorGroup">
+      <div class="ss-group-label">Ingestor</div>
+      <div class="ss-chips">
+        {#each ingestorChips as chip (chip.key)}
+          <span class="ss-chip" class:ss-ok={chip.ok} class:ss-warn={chip.tone === 'warn'} class:ss-bad={chip.tone === 'bad'}>
+            {#if chip.ok}<span class="ss-dot"></span>{/if}
+            <span class="ss-k">{chip.key}</span>
+            <span class="ss-v mono">{chip.value}</span>
+          </span>
+        {/each}
+      </div>
     </div>
-  </div>
+  {/if}
 </section>

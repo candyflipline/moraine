@@ -88,19 +88,20 @@ use crate::cursor::{
 };
 use crate::domain::{
     is_user_facing_content_event, AnalyticsConcurrencyPoint, AnalyticsRange, AnalyticsSnapshot,
-    AnalyticsTokenPoint, AnalyticsTurnPoint, AnalyticsWindow, Conversation,
-    ConversationDetailOptions, ConversationListFilter, ConversationListSort, ConversationMode,
-    ConversationSearchHit, ConversationSearchQuery, ConversationSearchResults,
-    ConversationSearchStats, ConversationSummary, FileAttentionQuery, FileAttentionTouch,
-    McpEventOpen, McpEventRef, McpEventSummary, McpEventType, McpSessionListFilter,
-    McpSessionListItem, McpSessionOpen, McpTurnCompact, McpTurnOpen, McpTurnRef, OpenContext,
-    OpenEvent, OpenEventRequest, Page, PageRequest, RepoConfig, SearchEventHit, SearchEventKind,
-    SearchEventsQuery, SearchEventsResult, SearchEventsStats, SearchMcpEventHit,
-    SearchMcpEventsQuery, SearchMcpEventsResult, SearchMcpEventsStats, SearchStrategyHint,
-    SessionAnalytics, SessionAnalyticsQuery, SessionEventsDirection, SessionEventsQuery,
-    SessionMetadata, SessionMetadataSearchHit, SessionMetadataSearchQuery,
+    AnalyticsTokenPoint, AnalyticsTurnPoint, AnalyticsWindow, AuthorModelUsage, AuthorUsage,
+    AuthorUsageSnapshot, Conversation, ConversationDetailOptions, ConversationListFilter,
+    ConversationListSort, ConversationMode, ConversationSearchHit, ConversationSearchQuery,
+    ConversationSearchResults, ConversationSearchStats, ConversationSummary, FileAttentionQuery,
+    FileAttentionTouch, McpEventOpen, McpEventRef, McpEventSummary, McpEventType,
+    McpSessionListFilter, McpSessionListItem, McpSessionOpen, McpTurnCompact, McpTurnOpen,
+    McpTurnRef, OpenContext, OpenEvent, OpenEventRequest, Page, PageRequest, RepoConfig,
+    SearchEventHit, SearchEventKind, SearchEventsQuery, SearchEventsResult, SearchEventsStats,
+    SearchMcpEventHit, SearchMcpEventsQuery, SearchMcpEventsResult, SearchMcpEventsStats,
+    SearchStrategyHint, SessionAnalytics, SessionAnalyticsQuery, SessionEventsDirection,
+    SessionEventsQuery, SessionMetadata, SessionMetadataSearchHit, SessionMetadataSearchQuery,
     SessionMetadataSearchResults, SessionMetadataSearchStats, SessionOriginScope, SessionStep,
-    SessionTurn, ToolResult, TraceEvent, Turn, TurnListFilter, TurnSummary, WebSearchEvent,
+    SessionTurn, ToolResult, TraceEvent, Turn, TurnListFilter, TurnSummary, UsageTotals,
+    WebSearchEvent,
 };
 use crate::error::{RepoError, RepoResult};
 use crate::repo::ConversationRepository;
@@ -137,6 +138,7 @@ pub struct ClickHouseConversationRepository {
     term_postings_cache: Arc<RwLock<HashMap<String, TermPostingsCacheEntry>>>,
     search_doc_extra_cache: Arc<RwLock<HashMap<String, SearchDocExtraCacheEntry>>>,
     analytics_cache: Arc<[Mutex<Option<AnalyticsCacheEntry>>; ANALYTICS_RANGE_COUNT]>,
+    author_usage_cache: Arc<[Mutex<Option<AuthorUsageCacheEntry>>; ANALYTICS_RANGE_COUNT]>,
     /// Sessions already proven to fall inside `cfg.session_scope`. A session's
     /// origin directory is its first recorded cwd and never changes, so
     /// positive results are cacheable forever. Negative results are NOT
@@ -156,6 +158,7 @@ impl ClickHouseConversationRepository {
             term_postings_cache: Arc::new(RwLock::new(HashMap::new())),
             search_doc_extra_cache: Arc::new(RwLock::new(HashMap::new())),
             analytics_cache: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
+            author_usage_cache: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
             scoped_session_cache: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }

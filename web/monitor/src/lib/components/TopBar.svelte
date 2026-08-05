@@ -1,14 +1,22 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import type { DataScope } from '../state/dataScope';
   import type { ThemeMode } from '../types/ui';
 
   export let theme: ThemeMode = 'light';
+  export let dataScope: DataScope = 'personal';
+  export let teamAvailable = false;
 
-  const dispatch = createEventDispatcher<{ setTheme: ThemeMode }>();
+  const dispatch = createEventDispatcher<{ setTheme: ThemeMode; setScope: DataScope }>();
 
   function select(mode: ThemeMode): void {
     if (mode === theme) return;
     dispatch('setTheme', mode);
+  }
+
+  function selectScope(scope: DataScope): void {
+    if (scope === dataScope || (scope === 'team' && !teamAvailable)) return;
+    dispatch('setScope', scope);
   }
 </script>
 
@@ -18,6 +26,20 @@
     <span class="brand-live" title="Updating live">live</span>
   </div>
   <div class="top-actions">
+    <div class="scope-switch" role="group" aria-label="Dashboard data">
+      <button
+        type="button"
+        aria-pressed={dataScope === 'personal'}
+        on:click={() => selectScope('personal')}
+      >Personal</button>
+      <button
+        type="button"
+        aria-pressed={dataScope === 'team'}
+        disabled={!teamAvailable}
+        title={teamAvailable ? 'Show routed team usage' : 'Open once with ?project_dir=/absolute/team/project'}
+        on:click={() => selectScope('team')}
+      >Team</button>
+    </div>
     <div class="theme-switch" role="group" aria-label="Theme">
       <button
         id="themeLight"

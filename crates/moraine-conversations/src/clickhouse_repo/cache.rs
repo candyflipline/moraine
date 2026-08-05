@@ -2,6 +2,10 @@ use super::*;
 
 pub(super) const BENCHMARK_REPLAY_SOURCE: &str = "benchmark-replay";
 pub(super) const ANALYTICS_CACHE_TTL: Duration = Duration::from_secs(30);
+// Team breakdowns add three canonical event scans. Keep the completed result
+// through the dashboard's 60-second refresh so routine polling does not issue
+// the same expensive work again immediately.
+pub(super) const AUTHOR_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
 pub(super) const ANALYTICS_RANGE_COUNT: usize = AnalyticsRange::ALL.len();
 pub(super) const CORPUS_STATS_CACHE_TTL: Duration = Duration::from_secs(30);
 pub(super) const TERM_DF_CACHE_TTL: Duration = Duration::from_secs(300);
@@ -30,6 +34,20 @@ pub(super) const SEARCH_DOC_EXTRA_CACHE_MAX_ENTRIES: usize = 65536;
 pub(super) struct AnalyticsCacheEntry {
     pub(super) snapshot: AnalyticsSnapshot,
     pub(super) fetched_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AuthorUsageCacheEntry {
+    pub(super) snapshot: AuthorUsageSnapshot,
+    pub(super) fetched_at: Instant,
+}
+
+impl AuthorUsageCacheEntry {
+    pub(super) fn is_fresh(&self, now: Instant) -> bool {
+        now.checked_duration_since(self.fetched_at)
+            .unwrap_or_default()
+            <= AUTHOR_USAGE_CACHE_TTL
+    }
 }
 
 impl AnalyticsCacheEntry {

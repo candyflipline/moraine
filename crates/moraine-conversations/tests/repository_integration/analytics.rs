@@ -268,6 +268,90 @@ async fn analytics_24h_uses_exact_four_request_canonical_wire_contract() {
     assert_eq!(snapshot.concurrent_sessions[0].concurrent_sessions, 2);
     assert_script_consumed(&state, 4);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn author_usage_groups_canonical_activity_without_loading_session_content() {
+    let responses = vec![
+        ScriptedResponse::rows(
+            &[
+                "nullIf(argMax(trimBoth(e.author)",
+                "toUInt64(count()) AS conversations",
+                "uniqExactIf(tuple(e.session_id, e.request_id)",
+                "FROM (SELECT * FROM `moraine`.`events` FINAL) AS e",
+                "INTERVAL 604800 SECOND",
+                "GROUP BY e.session_id",
+                "GROUP BY author",
+                "FORMAT JSONEachRow",
+            ],
+            json!([
+                {
+                    "author": "alice@example.com",
+                    "conversations": 4_u64,
+                    "turns": 12_u64
+                },
+                { "author": null, "conversations": 1_u64, "turns": 2_u64 }
+            ]),
+        ),
+        ScriptedResponse::rows(
+            &[
+                "WITH session_authors AS (SELECT",
+                "INNER JOIN session_authors AS a ON a.session_id = e.session_id",
+                "toUInt64(uniqExact(e.session_id)) AS conversations",
+                "GROUP BY a.author, model",
+                "FORMAT JSONEachRow",
+            ],
+            json!([
+                {
+                    "author": "alice@example.com",
+                    "model": "gpt-5.3-codex-xhigh",
+                    "conversations": 4_u64,
+                    "turns": 12_u64
+                },
+                {
+                    "author": null,
+                    "model": "claude-opus",
+                    "conversations": 1_u64,
+                    "turns": 2_u64
+                }
+            ]),
+        )
+        .forbidding(&["ANY INNER JOIN session_authors"]),
+        ScriptedResponse::rows(
+            &[
+                "ARRAY JOIN mapKeys(e.token_usage_buckets)",
+                "toUInt64(max(tokens_per_event)) AS tokens",
+                "e.harness = 'claude-code'",
+                "e.endpoint_kind AS endpoint_kind",
+                "GROUP BY author, bucket_unix, model, endpoint_kind, session_id, request_id, bucket",
+                "NOT (e.harness = 'claude-code' AND notEmpty(trimBoth(e.request_id)))",
+                "GROUP BY author, model",
+                "FORMAT JSONEachRow",
+            ],
+            json!([
+                {
+                    "author": "alice@example.com",
+                    "model": "gpt-5.3-codex-xhigh",
+                    "tokens": 40_000_u64
+                },
+                { "author": null, "model": "claude-opus", "tokens": 2_000_u64 }
+            ]),
+        )
+        .forbidding(&["ANY INNER JOIN session_authors"]),
+    ];
+    let (repo, state) = build_scripted_repo(responses).await;
+
+    let usage = repo
+        .author_usage(AnalyticsRange::SevenDays)
+        .await
+        .expect("author usage succeeds");
+
+    assert_eq!(usage.totals.conversations, 5);
+    assert_eq!(usage.totals.turns, 14);
+    assert_eq!(usage.totals.tokens, 42_000);
+    assert_eq!(usage.totals.models, 2);
+    assert_eq!(usage.authors[1].author, None);
+    assert_script_consumed(&state, 3);
+}
 #[tokio::test(flavor = "multi_thread")]
 async fn analytics_all_six_ranges_use_distinct_wire_keys() {
     let cases = [

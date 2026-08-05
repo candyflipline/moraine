@@ -1067,6 +1067,38 @@ pub struct AnalyticsSnapshot {
     pub concurrent_sessions: Vec<AnalyticsConcurrencyPoint>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageTotals {
+    pub conversations: u64,
+    pub turns: u64,
+    pub tokens: u64,
+    pub models: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorModelUsage {
+    pub model: String,
+    pub conversations: u64,
+    pub turns: u64,
+    pub tokens: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorUsage {
+    /// Stable configured identity. `None` represents legacy/unattributed rows.
+    pub author: Option<String>,
+    pub conversations: u64,
+    pub turns: u64,
+    pub tokens: u64,
+    pub models: Vec<AuthorModelUsage>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorUsageSnapshot {
+    pub totals: UsageTotals,
+    pub authors: Vec<AuthorUsage>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionLookback {
     #[serde(rename = "1h")]

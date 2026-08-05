@@ -61,6 +61,28 @@ struct AnalyticsConcurrencyRow {
 }
 
 #[derive(Debug, Deserialize)]
+struct AuthorUsageSummaryRow {
+    author: Option<String>,
+    conversations: u64,
+    turns: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthorModelUsageRow {
+    author: Option<String>,
+    model: String,
+    conversations: u64,
+    turns: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthorModelTokenRow {
+    author: Option<String>,
+    model: String,
+    tokens: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct WebSearchRow {
     event_time: String,
     harness: String,
@@ -225,6 +247,145 @@ FORMAT JSONEachRow"
             fetched_at: Instant::now(),
         });
         Ok(snapshot)
+    }
+
+    pub(super) async fn author_usage_impl(
+        &self,
+        range: AnalyticsRange,
+    ) -> RepoResult<AuthorUsageSnapshot> {
+        let slot = &self.author_usage_cache[analytics_range_index(range)];
+        let mut entry = slot.lock().await;
+        let now = Instant::now();
+        if let Some(cached) = entry.as_ref().filter(|cached| cached.is_fresh(now)) {
+            return Ok(cached.snapshot.clone());
+        }
+
+        let snapshot = self.load_author_usage_snapshot(range).await?;
+        *entry = Some(AuthorUsageCacheEntry {
+            snapshot: snapshot.clone(),
+            fetched_at: Instant::now(),
+        });
+        Ok(snapshot)
+    }
+
+    async fn load_author_usage_snapshot(
+        &self,
+        range: AnalyticsRange,
+    ) -> RepoResult<AuthorUsageSnapshot> {
+        let canonical_events = canonical_events_source(&self.table_ref("events"));
+        let window_seconds = range.window_seconds();
+        let bucket_seconds = range.bucket_seconds();
+        let event_bounds = format!(
+            "e.event_ts >= now() - INTERVAL {window_seconds} SECOND AND e.event_ts <= now()"
+        );
+        let author_event_bounds = format!(
+            "author_events.event_ts >= now() - INTERVAL {window_seconds} SECOND AND author_events.event_ts <= now()"
+        );
+        let model_expr = "if(lowerUTF8(trimBoth(e.model)) = 'codex', 'gpt-5.3-codex-xhigh', lowerUTF8(trimBoth(e.model)))";
+        let eligible_model =
+            "notEmpty(trimBoth(e.model)) AND lowerUTF8(trimBoth(e.model)) != '<synthetic>'";
+        let session_authors = format!(
+            "SELECT
+  author_events.session_id AS session_id,
+  nullIf(argMax(trimBoth(author_events.author), tuple(author_events.event_ts, author_events.event_uid)), '') AS author
+FROM {canonical_events} AS author_events
+WHERE {author_event_bounds}
+  AND notEmpty(trimBoth(author_events.session_id))
+GROUP BY author_events.session_id"
+        );
+
+        let summary_query = format!(
+            "SELECT
+  author,
+  toUInt64(count()) AS conversations,
+  toUInt64(sum(turns)) AS turns
+FROM (
+  SELECT
+    e.session_id AS session_id,
+    nullIf(argMax(trimBoth(e.author), tuple(e.event_ts, e.event_uid)), '') AS author,
+    toUInt64(uniqExactIf(tuple(e.session_id, e.request_id), {eligible_model} AND notEmpty(trimBoth(e.request_id)))) AS turns
+  FROM {canonical_events} AS e
+  WHERE {event_bounds}
+    AND notEmpty(trimBoth(e.session_id))
+  GROUP BY e.session_id
+)
+GROUP BY author
+ORDER BY ifNull(author, '') ASC
+FORMAT JSONEachRow"
+        );
+        let summary_rows: Vec<AuthorUsageSummaryRow> =
+            self.map_backend(self.query_rows(&summary_query, None).await)?;
+
+        let model_query = format!(
+            "WITH session_authors AS ({session_authors})
+SELECT
+  a.author AS author,
+  {model_expr} AS model,
+  toUInt64(uniqExact(e.session_id)) AS conversations,
+  toUInt64(uniqExactIf(tuple(e.session_id, e.request_id), notEmpty(trimBoth(e.request_id)))) AS turns
+FROM {canonical_events} AS e
+INNER JOIN session_authors AS a ON a.session_id = e.session_id
+WHERE {event_bounds}
+  AND {eligible_model}
+GROUP BY a.author, model
+ORDER BY ifNull(a.author, '') ASC, model ASC
+FORMAT JSONEachRow"
+        );
+        let model_rows: Vec<AuthorModelUsageRow> =
+            self.map_backend(self.query_rows(&model_query, None).await)?;
+
+        let token_query = format!(
+            "WITH session_authors AS ({session_authors})
+SELECT
+  author,
+  model,
+  toUInt64(sum(tokens)) AS tokens
+FROM (
+  SELECT
+    author,
+    model,
+    toUInt64(max(tokens_per_event)) AS tokens
+  FROM (
+    SELECT
+      a.author AS author,
+      toUInt64(toUnixTimestamp(toStartOfInterval(e.event_ts, INTERVAL {bucket_seconds} SECOND))) AS bucket_unix,
+      {model_expr} AS model,
+      e.endpoint_kind AS endpoint_kind,
+      e.session_id AS session_id,
+      e.request_id AS request_id,
+      bucket,
+      toUInt64(tokens_per_event) AS tokens_per_event
+    FROM {canonical_events} AS e
+    INNER JOIN session_authors AS a ON a.session_id = e.session_id
+    ARRAY JOIN mapKeys(e.token_usage_buckets) AS bucket, mapValues(e.token_usage_buckets) AS tokens_per_event
+    WHERE {event_bounds}
+      AND {eligible_model}
+      AND tokens_per_event > 0
+      AND e.harness = 'claude-code'
+      AND notEmpty(trimBoth(e.request_id))
+  )
+  GROUP BY author, bucket_unix, model, endpoint_kind, session_id, request_id, bucket
+  UNION ALL
+  SELECT
+    a.author AS author,
+    {model_expr} AS model,
+    toUInt64(tokens_per_event) AS tokens
+  FROM {canonical_events} AS e
+  INNER JOIN session_authors AS a ON a.session_id = e.session_id
+  ARRAY JOIN mapKeys(e.token_usage_buckets) AS bucket, mapValues(e.token_usage_buckets) AS tokens_per_event
+  WHERE {event_bounds}
+    AND {eligible_model}
+    AND tokens_per_event > 0
+    AND NOT (e.harness = 'claude-code' AND notEmpty(trimBoth(e.request_id)))
+)
+GROUP BY author, model
+ORDER BY ifNull(author, '') ASC, model ASC
+FORMAT JSONEachRow"
+        );
+        let token_rows: Vec<AuthorModelTokenRow> =
+            self.map_backend(self.query_rows(&token_query, None).await)?;
+
+        Ok(assemble_author_usage(summary_rows, model_rows, token_rows))
     }
 
     async fn load_analytics_snapshot(
@@ -453,6 +614,99 @@ FORMAT JSONEachRow"
             })
             .collect())
     }
+}
+
+fn assemble_author_usage(
+    summaries: Vec<AuthorUsageSummaryRow>,
+    model_rows: Vec<AuthorModelUsageRow>,
+    token_rows: Vec<AuthorModelTokenRow>,
+) -> AuthorUsageSnapshot {
+    let mut authors = BTreeMap::<Option<String>, AuthorUsage>::new();
+    for row in summaries {
+        authors.insert(
+            row.author.clone(),
+            AuthorUsage {
+                author: row.author,
+                conversations: row.conversations,
+                turns: row.turns,
+                tokens: 0,
+                models: Vec::new(),
+            },
+        );
+    }
+
+    let mut models = BTreeMap::<(Option<String>, String), AuthorModelUsage>::new();
+    for row in model_rows {
+        authors
+            .entry(row.author.clone())
+            .or_insert_with(|| AuthorUsage {
+                author: row.author.clone(),
+                ..AuthorUsage::default()
+            });
+        models.insert(
+            (row.author, row.model.clone()),
+            AuthorModelUsage {
+                model: row.model,
+                conversations: row.conversations,
+                turns: row.turns,
+                tokens: 0,
+            },
+        );
+    }
+
+    for row in token_rows {
+        let author_usage = authors
+            .entry(row.author.clone())
+            .or_insert_with(|| AuthorUsage {
+                author: row.author.clone(),
+                ..AuthorUsage::default()
+            });
+        author_usage.tokens = author_usage.tokens.saturating_add(row.tokens);
+        models
+            .entry((row.author, row.model.clone()))
+            .or_insert_with(|| AuthorModelUsage {
+                model: row.model,
+                ..AuthorModelUsage::default()
+            })
+            .tokens = row.tokens;
+    }
+
+    for ((author, _), model) in models {
+        if let Some(usage) = authors.get_mut(&author) {
+            usage.models.push(model);
+        }
+    }
+
+    let mut authors = authors.into_values().collect::<Vec<_>>();
+    for usage in &mut authors {
+        usage.models.sort_by(|left, right| {
+            right
+                .tokens
+                .cmp(&left.tokens)
+                .then_with(|| left.model.cmp(&right.model))
+        });
+    }
+    authors.sort_by(|left, right| {
+        right
+            .tokens
+            .cmp(&left.tokens)
+            .then_with(|| left.author.is_none().cmp(&right.author.is_none()))
+            .then_with(|| left.author.cmp(&right.author))
+    });
+
+    let mut distinct_models = BTreeMap::<String, ()>::new();
+    let mut totals = UsageTotals::default();
+    for author in &authors {
+        totals.conversations = totals.conversations.saturating_add(author.conversations);
+        totals.turns = totals.turns.saturating_add(author.turns);
+        totals.tokens = totals.tokens.saturating_add(author.tokens);
+        for model in &author.models {
+            distinct_models.insert(model.model.clone(), ());
+        }
+    }
+    totals.models = distinct_models.len() as u64;
+
+    AuthorUsageSnapshot { totals, authors }
 }
 
 fn assemble_sessions(
@@ -814,6 +1068,67 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(results[0].is_none());
         assert_eq!(results[1].expect("latest call result").text, "done");
+    }
+
+    #[test]
+    fn author_usage_reconciles_totals_and_preserves_unattributed_rows() {
+        let snapshot = assemble_author_usage(
+            vec![
+                AuthorUsageSummaryRow {
+                    author: Some("alice@example.com".to_string()),
+                    conversations: 4,
+                    turns: 12,
+                },
+                AuthorUsageSummaryRow {
+                    author: None,
+                    conversations: 1,
+                    turns: 2,
+                },
+            ],
+            vec![
+                AuthorModelUsageRow {
+                    author: Some("alice@example.com".to_string()),
+                    model: "gpt-5.3-codex-xhigh".to_string(),
+                    conversations: 4,
+                    turns: 12,
+                },
+                AuthorModelUsageRow {
+                    author: None,
+                    model: "claude-opus".to_string(),
+                    conversations: 1,
+                    turns: 2,
+                },
+            ],
+            vec![
+                AuthorModelTokenRow {
+                    author: Some("alice@example.com".to_string()),
+                    model: "gpt-5.3-codex-xhigh".to_string(),
+                    tokens: 40_000,
+                },
+                AuthorModelTokenRow {
+                    author: None,
+                    model: "claude-opus".to_string(),
+                    tokens: 2_000,
+                },
+            ],
+        );
+
+        assert_eq!(
+            snapshot.totals,
+            UsageTotals {
+                conversations: 5,
+                turns: 14,
+                tokens: 42_000,
+                models: 2,
+            }
+        );
+        assert_eq!(
+            snapshot.authors[0].author.as_deref(),
+            Some("alice@example.com")
+        );
+        assert_eq!(snapshot.authors[0].tokens, 40_000);
+        assert_eq!(snapshot.authors[1].author, None);
+        assert_eq!(snapshot.authors[1].models[0].model, "claude-opus");
     }
 
     #[test]

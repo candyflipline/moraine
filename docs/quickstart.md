@@ -99,6 +99,19 @@ After starting the backend, open the monitor UI:
 http://127.0.0.1:8080
 ```
 
+To open aggregate usage for a project routed to a named team backend, add its
+absolute path as the local `project_dir` query parameter and bookmark the URL:
+
+```text
+http://127.0.0.1:8080/?project_dir=/absolute/path/to/team-project
+```
+
+The dashboard remembers that path for its Personal/Team switch. Team mode shows
+aggregate conversations, turns, tokens, and models by configured
+`[identity].author`; it does not request or render team conversation content.
+The browser sends only the project path to the loopback backend, which resolves
+the existing trusted route and keeps ClickHouse credentials server-side.
+
 The backend HTTP listener binds to `127.0.0.1` by default. Before changing the
 bind, read the [experimental HTTP bind guard](configuration.md#experimental-http-bind-guard);
 it is startup groundwork, not HTTP request authentication.

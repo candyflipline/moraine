@@ -151,9 +151,37 @@ export interface AnalyticsSeries {
   concurrent_sessions: ConcurrentSessionsPoint[];
 }
 
+export interface UsageTotals {
+  conversations: number;
+  turns: number;
+  tokens: number;
+  models: number;
+}
+
+export interface AuthorModelUsage {
+  model: string;
+  conversations: number;
+  turns: number;
+  tokens: number;
+}
+
+export interface AuthorUsage {
+  author: string | null;
+  conversations: number;
+  turns: number;
+  tokens: number;
+  models: AuthorModelUsage[];
+}
+
+export interface AuthorUsageSnapshot {
+  totals: UsageTotals;
+  authors: AuthorUsage[];
+}
+
 export interface AnalyticsResponse {
   ok: boolean;
   range: AnalyticsRange;
   series: AnalyticsSeries;
+  usage?: AuthorUsageSnapshot;
   error?: string;
 }

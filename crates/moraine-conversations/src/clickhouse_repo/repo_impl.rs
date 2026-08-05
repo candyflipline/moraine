@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::{
-    AnalyticsRange, AnalyticsSnapshot, IngestHeartbeatRead, IngestStatusRead, SessionAnalytics,
-    SessionAnalyticsQuery, StoreDiagnostics, StoreHealth, TablePreview, TablePreviewQuery,
-    TableSummaries, WebSearchEvent,
+    AnalyticsRange, AnalyticsSnapshot, AuthorUsageSnapshot, IngestHeartbeatRead, IngestStatusRead,
+    SessionAnalytics, SessionAnalyticsQuery, StoreDiagnostics, StoreHealth, TablePreview,
+    TablePreviewQuery, TableSummaries, WebSearchEvent,
 };
 
 #[async_trait]
@@ -23,6 +23,10 @@ impl ConversationRepository for ClickHouseConversationRepository {
 
     async fn analytics_series(&self, range: AnalyticsRange) -> RepoResult<AnalyticsSnapshot> {
         self.analytics_series_impl(range).await
+    }
+
+    async fn author_usage(&self, range: AnalyticsRange) -> RepoResult<AuthorUsageSnapshot> {
+        self.author_usage_impl(range).await
     }
 
     async fn list_web_searches(&self, limit: u16) -> RepoResult<Vec<WebSearchEvent>> {

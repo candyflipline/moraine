@@ -16,6 +16,8 @@ use moraine_conversations::{
     SessionStep, SessionTurn, StoreConnectionMetrics, StoreHealth, StoreProbe, TablePreviewQuery,
     TableSummaries,
 };
+#[cfg(test)]
+use moraine_conversations::{AuthorModelUsage, AuthorUsage, AuthorUsageSnapshot, UsageTotals};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::future::Future;
@@ -41,9 +43,10 @@ struct LimitQuery {
 struct StatusQuery {
     history: Option<u64>,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct AnalyticsQuery {
     range: Option<String>,
+    breakdown: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -622,6 +625,16 @@ async fn api_analytics(
     Extension(backend): Extension<Arc<BackendRepository>>,
 ) -> Response {
     let range = resolve_analytics_range(params.range.as_deref());
+    let include_author_usage = match params.breakdown.as_deref() {
+        None => false,
+        Some("author") => true,
+        Some(_) => {
+            return json_response(
+                json!({"ok": false, "error": "unsupported analytics breakdown"}),
+                StatusCode::BAD_REQUEST,
+            );
+        }
+    };
     let snapshot = match backend.repository().analytics_series(range).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -632,25 +645,36 @@ async fn api_analytics(
         }
     };
 
-    json_response(
-        json!({
-            "ok": true,
-            "range": {
-                "key": snapshot.window.range.as_str(),
-                "label": format!("Last {}", snapshot.window.range.as_str()),
-                "window_seconds": snapshot.window.window_seconds,
-                "bucket_seconds": snapshot.window.bucket_seconds,
-                "from_unix": snapshot.window.from_unix,
-                "to_unix": snapshot.window.to_unix,
-            },
-            "series": {
-                "tokens": snapshot.tokens,
-                "turns": snapshot.turns,
-                "concurrent_sessions": snapshot.concurrent_sessions,
+    let mut payload = json!({
+        "ok": true,
+        "range": {
+            "key": snapshot.window.range.as_str(),
+            "label": format!("Last {}", snapshot.window.range.as_str()),
+            "window_seconds": snapshot.window.window_seconds,
+            "bucket_seconds": snapshot.window.bucket_seconds,
+            "from_unix": snapshot.window.from_unix,
+            "to_unix": snapshot.window.to_unix,
+        },
+        "series": {
+            "tokens": snapshot.tokens,
+            "turns": snapshot.turns,
+            "concurrent_sessions": snapshot.concurrent_sessions,
+        }
+    });
+    if include_author_usage {
+        let usage = match backend.repository().author_usage(range).await {
+            Ok(usage) => usage,
+            Err(error) => {
+                return json_response(
+                    json!({"ok": false, "error": format!("author usage query failed: {error}")}),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                );
             }
-        }),
-        StatusCode::OK,
-    )
+        };
+        payload["usage"] = json!(usage);
+    }
+
+    json_response(payload, StatusCode::OK)
 }
 
 fn resolve_analytics_range(value: Option<&str>) -> AnalyticsRange {
@@ -1477,6 +1501,40 @@ mod tests {
                     concurrent_sessions: 1,
                 }],
             })),
+            author_usage: Some(Ok(AuthorUsageSnapshot {
+                totals: UsageTotals {
+                    conversations: 5,
+                    turns: 14,
+                    tokens: 42_000,
+                    models: 2,
+                },
+                authors: vec![
+                    AuthorUsage {
+                        author: Some("alice@example.com".to_string()),
+                        conversations: 4,
+                        turns: 12,
+                        tokens: 40_000,
+                        models: vec![AuthorModelUsage {
+                            model: "gpt-5.3-codex-xhigh".to_string(),
+                            conversations: 4,
+                            turns: 12,
+                            tokens: 40_000,
+                        }],
+                    },
+                    AuthorUsage {
+                        author: None,
+                        conversations: 1,
+                        turns: 2,
+                        tokens: 2_000,
+                        models: vec![AuthorModelUsage {
+                            model: "claude-opus".to_string(),
+                            conversations: 1,
+                            turns: 2,
+                            tokens: 2_000,
+                        }],
+                    },
+                ],
+            })),
             list_web_searches: Some(Ok(vec![WebSearchEvent {
                 event_time: "2026-02-16T12:00:00.000Z".to_string(),
                 harness: "codex".to_string(),
@@ -1709,6 +1767,7 @@ mod tests {
         let response = api_analytics(
             Query(AnalyticsQuery {
                 range: Some("7d".to_string()),
+                breakdown: None,
             }),
             Extension(backend.clone()),
         )
@@ -1718,6 +1777,7 @@ mod tests {
         assert_eq!(analytics["range"]["key"], json!("7d"));
         assert_eq!(analytics["range"]["label"], json!("Last 7d"));
         assert_eq!(analytics["series"]["tokens"][0]["tokens"], json!(4));
+        assert!(analytics.get("usage").is_none());
 
         let response = api_sessions(
             Query(SessionsQuery {
@@ -1778,6 +1838,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analytics_author_breakdown_is_explicit_additive_and_reconciled() {
+        let (backend, repository) = fake_backend(successful_responses()).await;
+
+        let response = api_analytics(
+            Query(AnalyticsQuery {
+                range: Some("7d".to_string()),
+                breakdown: Some("author".to_string()),
+            }),
+            Extension(backend.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["usage"]["totals"]["conversations"], json!(5));
+        assert_eq!(payload["usage"]["totals"]["turns"], json!(14));
+        assert_eq!(payload["usage"]["totals"]["tokens"], json!(42_000));
+        assert_eq!(
+            payload["usage"]["authors"][0]["author"],
+            json!("alice@example.com")
+        );
+        assert_eq!(payload["usage"]["authors"][1]["author"], Value::Null);
+        assert_eq!(
+            repository.calls().author_usage,
+            vec![AnalyticsRange::SevenDays]
+        );
+
+        let response = api_analytics(
+            Query(AnalyticsQuery {
+                range: None,
+                breakdown: Some("backend".to_string()),
+            }),
+            Extension(backend),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response_json(response).await["error"],
+            json!("unsupported analytics breakdown")
+        );
+        assert_eq!(repository.calls().analytics_series.len(), 1);
+    }
+
+    #[tokio::test]
     async fn repository_failures_keep_existing_http_status_envelopes() {
         let (backend, _) = fake_backend(InMemoryConversationResponses {
             list_session_analytics: Some(Err(RepoError::backend("sessions unavailable"))),
@@ -1803,7 +1906,10 @@ mod tests {
         );
 
         let analytics = api_analytics(
-            Query(AnalyticsQuery { range: None }),
+            Query(AnalyticsQuery {
+                range: None,
+                breakdown: None,
+            }),
             Extension(backend.clone()),
         )
         .await;

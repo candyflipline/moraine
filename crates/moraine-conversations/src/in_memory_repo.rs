@@ -3,9 +3,9 @@ use std::sync::{Mutex, MutexGuard};
 use async_trait::async_trait;
 
 use crate::domain::{
-    AnalyticsRange, AnalyticsSnapshot, AnalyticsWindow, IngestHeartbeatRead, IngestStatusRead,
-    SessionAnalytics, SessionAnalyticsQuery, StoreDiagnostics, StoreHealth, TablePreview,
-    TablePreviewQuery, TableSummaries, WebSearchEvent,
+    AnalyticsRange, AnalyticsSnapshot, AnalyticsWindow, AuthorUsageSnapshot, IngestHeartbeatRead,
+    IngestStatusRead, SessionAnalytics, SessionAnalyticsQuery, StoreDiagnostics, StoreHealth,
+    TablePreview, TablePreviewQuery, TableSummaries, WebSearchEvent,
 };
 use crate::domain::{
     Conversation, ConversationDetailOptions, ConversationListFilter, ConversationSearchQuery,
@@ -47,6 +47,7 @@ pub struct InMemoryConversationResponses {
     pub cancel_query: Option<RepoResult<()>>,
     pub list_session_analytics: Option<RepoResult<Vec<SessionAnalytics>>>,
     pub analytics_series: Option<RepoResult<AnalyticsSnapshot>>,
+    pub author_usage: Option<RepoResult<AuthorUsageSnapshot>>,
     pub list_web_searches: Option<RepoResult<Vec<WebSearchEvent>>>,
     pub latest_ingest_heartbeat: Option<RepoResult<IngestHeartbeatRead>>,
     pub ingest_status: Option<RepoResult<IngestStatusRead>>,
@@ -79,6 +80,7 @@ pub struct InMemoryConversationCalls {
     pub cancel_query: Vec<String>,
     pub list_session_analytics: Vec<SessionAnalyticsQuery>,
     pub analytics_series: Vec<AnalyticsRange>,
+    pub author_usage: Vec<AnalyticsRange>,
     pub list_web_searches: Vec<u16>,
     pub latest_ingest_heartbeat: usize,
     pub ingest_status: Vec<u16>,
@@ -264,6 +266,11 @@ impl ConversationRepository for InMemoryConversationRepository {
                 concurrent_sessions: Vec::new(),
             }
         )
+    }
+
+    async fn author_usage(&self, range: AnalyticsRange) -> RepoResult<AuthorUsageSnapshot> {
+        self.record(|calls| calls.author_usage.push(range));
+        response_or!(self, author_usage, AuthorUsageSnapshot::default())
     }
 
     async fn list_web_searches(&self, limit: u16) -> RepoResult<Vec<WebSearchEvent>> {
@@ -555,6 +562,12 @@ mod tests {
         assert_eq!(snapshot.window.window_seconds, 2_592_000);
         assert_eq!(snapshot.window.bucket_seconds, 86_400);
         assert!(snapshot.tokens.is_empty());
+        assert_eq!(
+            repo.author_usage(AnalyticsRange::ThirtyDays)
+                .await
+                .expect("default author usage"),
+            Default::default()
+        );
         assert!(repo
             .list_web_searches(0)
             .await
@@ -595,6 +608,7 @@ mod tests {
         let calls = fake.calls();
         assert_eq!(calls.list_session_analytics, vec![session_query]);
         assert_eq!(calls.analytics_series, vec![AnalyticsRange::ThirtyDays]);
+        assert_eq!(calls.author_usage, vec![AnalyticsRange::ThirtyDays]);
         assert_eq!(calls.list_web_searches, vec![0]);
         assert_eq!(calls.latest_ingest_heartbeat, 1);
         assert_eq!(calls.list_table_summaries, 1);

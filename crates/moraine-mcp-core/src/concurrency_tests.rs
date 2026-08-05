@@ -1,10 +1,11 @@
 use super::*;
 use moraine_conversations::{
-    AnalyticsRange, AnalyticsSnapshot, Conversation, ConversationDetailOptions,
-    ConversationListFilter, ConversationSearchQuery, ConversationSearchResults, FileAttentionQuery,
-    FileAttentionTouch, InMemoryConversationRepository, IngestHeartbeatRead, IngestStatusRead,
-    McpEventOpen, McpSessionListFilter, McpSessionListItem, McpSessionOpen, McpTurnOpen,
-    OpenContext, OpenEventRequest, Page, PageRequest, RepoConfig, RepoResult, SearchEventsQuery,
+    AnalyticsRange, AnalyticsSnapshot, AuthorUsageSnapshot, Conversation,
+    ConversationDetailOptions, ConversationListFilter, ConversationSearchQuery,
+    ConversationSearchResults, FileAttentionQuery, FileAttentionTouch,
+    InMemoryConversationRepository, IngestHeartbeatRead, IngestStatusRead, McpEventOpen,
+    McpSessionListFilter, McpSessionListItem, McpSessionOpen, McpTurnOpen, OpenContext,
+    OpenEventRequest, Page, PageRequest, RepoConfig, RepoResult, SearchEventsQuery,
     SearchEventsResult, SearchMcpEventsQuery, SearchMcpEventsResult, SessionAnalytics,
     SessionAnalyticsQuery, SessionEventsQuery, SessionMetadata, SessionMetadataSearchQuery,
     SessionMetadataSearchResults, StoreDiagnostics, StoreHealth, TablePreview, TablePreviewQuery,
@@ -134,6 +135,10 @@ impl ConversationRepository for BlockingRepository {
 
     async fn analytics_series(&self, range: AnalyticsRange) -> RepoResult<AnalyticsSnapshot> {
         self.inner.analytics_series(range).await
+    }
+
+    async fn author_usage(&self, range: AnalyticsRange) -> RepoResult<AuthorUsageSnapshot> {
+        self.inner.author_usage(range).await
     }
 
     async fn list_web_searches(&self, limit: u16) -> RepoResult<Vec<WebSearchEvent>> {

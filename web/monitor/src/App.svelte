@@ -4,12 +4,25 @@
   import AnalyticsPanel from './lib/components/AnalyticsPanel.svelte';
   import IngestProgressPanel from './lib/components/IngestProgressPanel.svelte';
   import StatusStrip from './lib/components/StatusStrip.svelte';
+  import TeamUsagePanel from './lib/components/TeamUsagePanel.svelte';
   import SessionsPanel from './lib/components/sessions/SessionsPanel.svelte';
   import TopBar from './lib/components/TopBar.svelte';
-  import { fetchAnalytics, fetchHealth, fetchStatus } from './lib/api/client';
+  import {
+    fetchAnalytics,
+    fetchHealth,
+    fetchStatus,
+    type MonitorRequestContext,
+  } from './lib/api/client';
   import { fetchSessions } from './lib/api/sessions';
   import { FAST_POLL_INTERVAL_MS, SLOW_POLL_INTERVAL_MS } from './lib/constants';
   import { analyticsRangeStore } from './lib/state/monitor';
+  import {
+    contextFromUrl,
+    readTeamProjectDir,
+    rememberTeamProjectDir,
+    scopeUrl,
+    type DataScope,
+  } from './lib/state/dataScope';
   import {
     filteredSessionsStore,
     sessionsErrorStore,
@@ -37,6 +50,17 @@
 
   let analyticsPayload: AnalyticsResponse | null = null;
   let analyticsError: string | null = null;
+  let analyticsLoading = false;
+
+  let dataScope: DataScope = 'personal';
+  let requestContext: MonitorRequestContext = {};
+  let teamProjectDir: string | null = null;
+
+  $: teamAvailable = Boolean(teamProjectDir);
+  $: teamUsageError =
+    dataScope === 'team' && analyticsPayload?.ok && !analyticsPayload.usage && !analyticsError
+      ? 'Team usage was not returned by the selected backend.'
+      : analyticsError;
 
   $: sessions = $sessionsStore;
   $: filteredSessions = $filteredSessionsStore;
@@ -69,7 +93,7 @@
 
   async function loadHealth(): Promise<void> {
     try {
-      healthData = await fetchHealth();
+      healthData = await fetchHealth(requestContext);
       healthError = null;
     } catch (error) {
       healthError = errorMessage(error);
@@ -79,7 +103,7 @@
 
   async function loadStatus(): Promise<void> {
     try {
-      statusData = await fetchStatus();
+      statusData = await fetchStatus(requestContext);
       statusError = null;
     } catch (error) {
       statusError = errorMessage(error);
@@ -88,11 +112,14 @@
   }
 
   async function loadAnalytics(): Promise<void> {
+    analyticsLoading = true;
     try {
-      analyticsPayload = await fetchAnalytics(get(analyticsRangeStore));
+      analyticsPayload = await fetchAnalytics(get(analyticsRangeStore), requestContext);
       analyticsError = null;
     } catch (error) {
       analyticsError = `Analytics unavailable: ${errorMessage(error)}`;
+    } finally {
+      analyticsLoading = false;
     }
   }
 
@@ -110,10 +137,18 @@
   }
 
   async function hydrateFast(): Promise<void> {
+    if (dataScope === 'team') {
+      await loadHealth();
+      return;
+    }
     await Promise.all([loadHealth(), loadStatus()]);
   }
 
   async function hydrateSlow(): Promise<void> {
+    if (dataScope === 'team') {
+      await loadAnalytics();
+      return;
+    }
     await Promise.all([loadAnalytics(), loadSessions()]);
   }
 
@@ -126,12 +161,26 @@
     setTheme(event.detail);
   }
 
+  function handleSetScope(event: CustomEvent<DataScope>): void {
+    const nextUrl = scopeUrl(window.location.href, event.detail, teamProjectDir);
+    if (nextUrl) window.location.assign(nextUrl);
+  }
+
   function handleFilterChange(event: CustomEvent<SessionsFilter>): void {
     sessionsFilterStore.set(event.detail);
   }
 
   onMount(() => {
     initializeTheme();
+    requestContext = contextFromUrl(window.location.href);
+    if (requestContext.projectDir) {
+      dataScope = 'team';
+      teamProjectDir = requestContext.projectDir;
+      rememberTeamProjectDir(window.localStorage, requestContext.projectDir);
+    } else {
+      dataScope = 'personal';
+      teamProjectDir = readTeamProjectDir(window.localStorage);
+    }
 
     void hydrateFast();
     void hydrateSlow();
@@ -144,24 +193,47 @@
       void loadAnalytics();
     }, SLOW_POLL_INTERVAL_MS);
 
-    const sessionsInterval = window.setInterval(() => {
-      void loadSessions();
-    }, SESSIONS_POLL_INTERVAL_MS);
+    const sessionsInterval =
+      dataScope === 'personal'
+        ? window.setInterval(() => {
+            void loadSessions();
+          }, SESSIONS_POLL_INTERVAL_MS)
+        : null;
 
     return () => {
       window.clearInterval(fastInterval);
       window.clearInterval(slowInterval);
-      window.clearInterval(sessionsInterval);
+      if (sessionsInterval !== null) window.clearInterval(sessionsInterval);
     };
   });
 </script>
 
 <div class="app-shell">
-  <TopBar theme={$themeStore} on:setTheme={handleSetTheme} />
+  <TopBar
+    theme={$themeStore}
+    {dataScope}
+    {teamAvailable}
+    on:setTheme={handleSetTheme}
+    on:setScope={handleSetScope}
+  />
 
   <main class="layout">
-    <StatusStrip health={healthData} {healthError} status={statusData} {statusError} />
-    <IngestProgressPanel status={statusData} theme={$themeStore} />
+    <StatusStrip
+      health={healthData}
+      {healthError}
+      status={statusData}
+      {statusError}
+      showIngestor={dataScope === 'personal'}
+    />
+    {#if dataScope === 'personal'}
+      <IngestProgressPanel status={statusData} theme={$themeStore} />
+    {:else}
+      <TeamUsagePanel
+        usage={analyticsPayload?.usage ?? null}
+        loading={analyticsLoading}
+        errorMessage={teamUsageError}
+      />
+    {/if}
 
     <AnalyticsPanel
       payload={analyticsPayload}
@@ -171,15 +243,17 @@
       on:rangeChange={handleRangeChange}
     />
 
-    <SessionsPanel
-      sessions={sessions}
-      filtered={filteredSessions}
-      filter={sessionsFilter}
-      models={sessionModels}
-      harnesses={sessionHarnesses}
-      loading={sessionsLoading}
-      errorMessage={sessionsError}
-      on:filterChange={handleFilterChange}
-    />
+    {#if dataScope === 'personal'}
+      <SessionsPanel
+        sessions={sessions}
+        filtered={filteredSessions}
+        filter={sessionsFilter}
+        models={sessionModels}
+        harnesses={sessionHarnesses}
+        loading={sessionsLoading}
+        errorMessage={sessionsError}
+        on:filterChange={handleFilterChange}
+      />
+    {/if}
   </main>
 </div>

@@ -296,6 +296,74 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
   expect(metrics.overflowX, JSON.stringify(metrics)).toBeLessThanOrEqual(1);
 }
 
+async function expectTeamUsageView(page: Page, traffic: RuntimeTraffic): Promise<void> {
+  const projectDir = '/Users/alice/src/team-project';
+  const sessionsBefore = traffic.apiPathnames.filter(
+    (pathname) => pathname === '/api/v1/sessions',
+  ).length;
+  const routedRequests: Array<{ pathname: string; projectDir: string | undefined }> = [];
+  page.on('request', (request) => {
+    const { pathname } = new URL(request.url());
+    if (pathname.startsWith('/api/v1/')) {
+      routedRequests.push({ pathname, projectDir: request.headers()['x-moraine-project-dir'] });
+    }
+  });
+  await page.route('**/api/v1/analytics?*', async (route) => {
+    const requestUrl = new URL(route.request().url());
+    expect(requestUrl.searchParams.get('breakdown')).toBe('author');
+    expect(route.request().headers()['x-moraine-project-dir']).toBe(projectDir);
+    await route.fulfill({
+      json: {
+        ...analyticsFixture(requestUrl.searchParams.get('range') || '24h'),
+        usage: {
+          totals: { conversations: 5, turns: 14, tokens: 42_000, models: 2 },
+          authors: [
+            {
+              author: 'alice@example.com',
+              conversations: 4,
+              turns: 12,
+              tokens: 40_000,
+              models: [
+                {
+                  model: 'gpt-5.3-codex-xhigh',
+                  conversations: 4,
+                  turns: 12,
+                  tokens: 40_000,
+                },
+              ],
+            },
+            {
+              author: null,
+              conversations: 1,
+              turns: 2,
+              tokens: 2_000,
+              models: [],
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  await page.goto(`/?project_dir=${encodeURIComponent(projectDir)}`, {
+    waitUntil: 'domcontentloaded',
+  });
+
+  await expect(page.getByRole('button', { name: 'Team' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('heading', { name: 'Team Usage' })).toBeVisible();
+  await expect(page.getByText('alice@example.com')).toBeVisible();
+  await expect(page.getByText('Unattributed')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Ingestion Progress' })).toHaveCount(0);
+  await expect(page.locator('#sessionsPanel')).toHaveCount(0);
+
+  await expect.poll(() => routedRequests.length).toBeGreaterThan(0);
+  expect(
+    traffic.apiPathnames.filter((pathname) => pathname === '/api/v1/sessions').length,
+  ).toBe(sessionsBefore);
+  expect(routedRequests.some((request) => request.pathname === '/api/v1/sessions')).toBe(false);
+  expect(routedRequests.every((request) => request.projectDir === projectDir)).toBe(true);
+}
+
 test.beforeEach(async ({ page }) => {
   await setupMockMonitorApi(page);
 });
@@ -370,6 +438,7 @@ test('loads dashboard and handles core interactions', async ({ page }) => {
   expect(htmlThemeAfter).toBe(otherTheme);
 
   await expectVersionedRuntimeTraffic(runtimeTraffic, pageOrigin);
+  await expectTeamUsageView(page, runtimeTraffic);
 });
 
 test('keeps dashboard and detail views inside the mobile viewport', async ({ page }) => {

@@ -16,7 +16,7 @@ All canonical routes are `GET` routes and successful responses use JSON.
 | `/api/v1/capabilities` | none | Describe this server build, its observed schema migration level, and available HTTP feature groups. |
 | `/api/v1/health` | none | Probe ClickHouse health and report a compact ingest heartbeat summary. |
 | `/api/v1/status` | `history` | Return ClickHouse/database diagnostics plus typed ingestion health, finite historical coverage, optional durable progress history, conservative ETA, and active alerts. |
-| `/api/v1/analytics` | `range` | Return token, turn, and concurrent-session time series for a supported window. |
+| `/api/v1/analytics` | `range`, `breakdown` | Return token, turn, and concurrent-session time series for a supported window, with an optional author usage breakdown. |
 | `/api/v1/tables` | none | List tables with engine, temporary-table marker, and estimated row count. |
 | `/api/v1/tables/:table` | `limit` | Return the named table's schema and a bounded row preview. `:table` is a path parameter. |
 | `/api/v1/web-searches` | `limit` | Return a bounded list of normalized web-search activity. |
@@ -84,6 +84,7 @@ unsigned integer is a malformed query and returns HTTP `400`.
 | --- | --- | --- | --- |
 | `/api/v1/status` | `history` | `0` | clamped to `0..=120`; omitted or `0` performs no history read |
 | `/api/v1/analytics` | `range` | `24h` | `15m`, `1h`, `6h`, `24h`, `7d`, or `30d` |
+| `/api/v1/analytics` | `breakdown` | omitted | omitted, or `author`; other values return HTTP `400` |
 | `/api/v1/sessions` | `since` | `30d` | `1h`, `6h`, `24h`, `7d`, `30d`, `90d`, or `all` |
 | `/api/v1/sessions` | `limit` | `50` | clamped to `1..=200` |
 | `/api/v1/web-searches` | `limit` | `100` | clamped to `1..=1000` |
@@ -93,6 +94,15 @@ An unknown `range` does not produce an error; it resolves to `24h`. An unknown
 `since` similarly resolves to `30d`. Responses report or embody the resolved
 window, so clients should treat the supported values above as the request
 contract rather than relying on fallback behavior.
+
+When `breakdown=author` is requested, the analytics response includes an
+additive `usage` object with reconciled totals and per-author/per-model rows for
+conversations, turns, tokens, and distinct models. Conversation totals use
+distinct session identity. Turn totals use the same distinct session/request
+identity as the existing analytics series. Token totals preserve the existing
+Claude request-level deduplication. A `null` author represents legacy rows that
+were ingested without `[identity].author`; the bundled dashboard labels those
+rows `Unattributed`.
 
 Status history is the exception to positive collection limits: zero is meaningful
 and preserves the cheap latest-only status poll. When requested, history contains
@@ -230,6 +240,12 @@ continues to use the configured Unix socket and existing socket protocol. MCP
 tool names, request/response schemas, and fallback behavior are unchanged by
 this HTTP API version.
 
-There are no MCP tool endpoints under `/api/v1`, and HTTP clients cannot select
-a named backend through this API. This API version also does not introduce HTTP
-authentication or a remote-deployment contract.
+There are no MCP tool endpoints under `/api/v1`. Repository-backed data routes
+accept an optional `X-Moraine-Project-Dir` header containing one absolute local
+project path. The server resolves that path only through configured cwd routes
+and repo references; the client cannot provide a backend name, URL, or
+credentials. The capabilities and static routes ignore this header.
+
+This API version does not introduce HTTP authentication or a remote-deployment
+contract. Project routing is intended for the loopback dashboard and other
+trusted local clients, not as authorization for a publicly exposed monitor.
